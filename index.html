@@ -454,6 +454,18 @@
   .apv-edit-row input{ padding:6px 8px; font-size:12.5px; }
   .apv-edit-row .row-actions button{ padding:6px 11px; }
 
+  tr.apv-just-saved{ background:#E9F4EE; }
+  tr.apv-just-saved:hover{ background:#DEEEE3; }
+  .just-saved-tag{
+    display:inline-block;
+    margin-left:6px;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    color:var(--ok);
+  }
+
   .empty-state, .loading-state, .error-state{
     text-align:center;
     padding:48px 20px;
@@ -3211,7 +3223,7 @@
          .map(r => {
            const obj = {};
            headers.forEach((h, i) => {
-             const key = keyMap[h.toUpperCase()] || h;
+             const key = keyMap[String(h).replace(/\s+/g, " ").trim().toUpperCase()] || h;
              let val = r[i];
              if (val instanceof Date) val = Utilities.formatDate(val, Session.getScriptTimeZone(), "yyyy-MM-dd");
              obj[key] = val;
@@ -3421,6 +3433,7 @@ let sortKey = "date";
 let sortDir = -1;
 let apvSortKey = "date";
 let apvSortDir = -1;
+let apvRecentlyUpdated = new Set(); // ids that should stay visible despite the filter, right after a save
 
 const logLoading = document.getElementById("logLoading");
 const logEmpty = document.getElementById("logEmpty");
@@ -3459,8 +3472,8 @@ document.querySelectorAll("#apvTable th[data-key]").forEach(th => {
   });
 });
 
-document.getElementById("apvSearch").addEventListener("input", renderApvTable);
-document.getElementById("apvFilter").addEventListener("change", renderApvTable);
+document.getElementById("apvSearch").addEventListener("input", () => { apvRecentlyUpdated.clear(); renderApvTable(); });
+document.getElementById("apvFilter").addEventListener("change", () => { apvRecentlyUpdated.clear(); renderApvTable(); });
 
 function setLogState(state, message){
   logLoading.style.display = state === "loading" ? "block" : "none";
@@ -3471,6 +3484,7 @@ function setLogState(state, message){
 }
 
 function loadTransactions(){
+  apvRecentlyUpdated.clear();
   if (WEBAPP.startsWith("PASTE_")){
     const msg = "No backend connected yet — set WEBAPP to your Apps Script /exec URL.";
     setLogState("error", msg);
@@ -3498,7 +3512,7 @@ function loadTransactions(){
   document.getElementById("prEmpty").style.display = "none";
   document.getElementById("prTableWrap").style.display = "none";
 
-  fetch(WEBAPP, { method: "GET" })
+  fetch(WEBAPP + (WEBAPP.includes("?") ? "&" : "?") + "_ts=" + Date.now(), { method: "GET", cache: "no-store" })
     .then(res => {
       if (!res.ok) throw new Error("Server responded with " + res.status);
       return res.json();
@@ -3639,8 +3653,11 @@ function renderApvTable(){
 
   let rows = withIds.filter(r => {
     const isAssigned = !!String(r.apv || "").trim();
-    if (filter === "pending" && isAssigned) return false;
-    if (filter === "assigned" && !isAssigned) return false;
+    const justTouched = apvRecentlyUpdated.has(String(r.id));
+    if (!justTouched){
+      if (filter === "pending" && isAssigned) return false;
+      if (filter === "assigned" && !isAssigned) return false;
+    }
     if (!q) return true;
     return ["docNo","supplier","invoice"].some(k => String(r[k] || "").toLowerCase().includes(q));
   });
@@ -3663,14 +3680,15 @@ function renderApvTable(){
 
   apvTbody.innerHTML = rows.map(r => {
     const isAssigned = !!String(r.apv || "").trim();
+    const justTouched = apvRecentlyUpdated.has(String(r.id));
     return `
-    <tr data-id="${escapeHtml(r.id)}">
+    <tr data-id="${escapeHtml(r.id)}"${justTouched ? ' class="apv-just-saved"' : ""}>
       <td>${escapeHtml(r.date || "")}</td>
       <td>${escapeHtml(r.docNo || "")}</td>
       <td>${escapeHtml(r.supplier || "")}</td>
       <td>${escapeHtml(r.invoice || "")}</td>
       <td class="num">${peso(r.total)}</td>
-      <td><span class="apv-pill ${isAssigned ? "assigned" : "pending"}">${isAssigned ? escapeHtml(r.apv) : "Pending"}</span></td>
+      <td><span class="apv-pill ${isAssigned ? "assigned" : "pending"}">${isAssigned ? escapeHtml(r.apv) : "Pending"}</span>${justTouched ? ' <span class="just-saved-tag">Just saved</span>' : ""}</td>
       <td>
         <div class="row-actions">
           <button type="button" class="edit-row-btn apv-edit-btn" data-id="${escapeHtml(r.id)}">${isAssigned ? "Edit APV" : "Assign APV"}</button>
@@ -3736,6 +3754,7 @@ apvTbody.addEventListener("click", (e) => {
       .then(res => {
         if (res && res.status === "error") throw new Error(res.message || "Server error");
         tx.apv = newApv;
+        apvRecentlyUpdated.add(String(tx.id));
         showBanner(`APV No. ${newApv ? "assigned" : "cleared"} for voucher ${tx.docNo || ""}.`, "ok");
         renderApvTable();
         renderTable();
